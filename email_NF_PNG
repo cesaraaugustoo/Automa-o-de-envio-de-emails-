@@ -1,0 +1,170 @@
+import pandas as pd
+import time
+import win32com.client as win32
+import base64
+import os
+
+# CONFIGURAÇÕES
+ARQUIVO_EXCEL = "dados.xlsx" # Nome do arquivo Excel
+IMAGEM_ASSINATURA = "Imagem1.jpg"  # nome da imagem
+
+print(" Iniciando automação de e-mails...")
+
+#  LER EXCEL
+df = pd.read_excel(ARQUIVO_EXCEL, engine="openpyxl")
+df.columns = df.columns.str.strip()
+
+#  REMOVE LINHAS TOTALMENTE VAZIAS
+df = df.dropna(how="all")
+
+print(f" Excel carregado com {len(df)} linhas válidas")
+print("Colunas detectadas:", df.columns.tolist()) #Lista colunas encontradas Excel
+
+#  DATAS
+df["Inicial"] = pd.to_datetime(df["Inicial"], errors="coerce", dayfirst=True)
+df["final"] = pd.to_datetime(df["final"], errors="coerce", dayfirst=True)
+df["prazo"] = pd.to_datetime(df["prazo"], errors="coerce", dayfirst=True)
+
+# Função formatar data
+def formatar_data(data):
+    if pd.isna(data):
+        return ""
+    return data.strftime("%d/%m/%Y")
+
+#  VERIFICAR IMAGEM 
+if not os.path.exists(IMAGEM_ASSINATURA):
+    raise FileNotFoundError(f" Imagem não encontrada: {IMAGEM_ASSINATURA}")
+
+tipo_imagem = IMAGEM_ASSINATURA.split(".")[-1]
+
+with open(IMAGEM_ASSINATURA, "rb") as img:
+    imagem_base64 = base64.b64encode(img.read()).decode("utf-8")
+
+# TEMPLATE E-MAIL HTML
+TEMPLATE = f"""
+<html>
+<body style="font-family: Arial, sans-serif; font-size: 14px; color: #000;">
+
+<p>Boa tarde!</p>
+
+<p>
+<b>Código Interno:</b> {{codigo}}<br>
+<b>Nome/Razão Social:</b> {{nome}}
+</p>
+
+<p>
+Venho por meio deste, informar que o valor pago no período de <b>{{data_inicio}}</b> a <b>{{data_fim}}</b> está disponível no sistema Única, 
+e solicitar a nota fiscal referente ao pagamento diário.
+</p>
+
+<p>
+Para acessá-lo, basta seguir o caminho:<br>
+<b>Sistema Única &gt; Financeiro &gt; Visualizar conta corrente &gt; Recebido do período {{data_inicio}} a {{data_fim}}</b>
+</p>
+
+<p>
+<b>Descrição na NF:</b> Prestação de Serviços ref. {{data_inicio}} a {{data_fim}}<br>
+<b>Valor da NF:</b> Conforme as informações do recibo.
+</p>
+
+<p>
+Os impostos deverão constar mencionados na Nota Fiscal, de acordo com o perfil de tributação do Prestador de Serviços. 
+Se necessário, consulte um contador.
+</p>
+
+<p>
+A nota fiscal deverá ser emitida até o dia <b>{{data_limite}}</b>.
+</p>
+
+<br>
+
+<p><b>Dados da empresa pagadora para emissão:</b><br>
+ÚNICA PROMOTORA LTDA<br>
+CNPJ: 41.163.463/0001-51<br>
+Rua Wilson Castro Mares, 125, Centro | Divisópolis/MG.<br>
+CEP: 39912-000
+</p>
+
+<br>
+
+<p><b>NOTA ELETRÔNICA:</b><br>
+Enviar para o e-mail nfe@unicapromotora.com.br
+</p>
+
+<p><b>NOTA MANUAL (TALÃO):</b><br>
+Enviar digitalizada para o e-mail acima e a NOTA ORIGINAL para o endereço abaixo:
+</p>
+
+<p>
+ÚNICA PROMOTORA LTDA<br>
+CNPJ: 41.163.463/0001-51<br>
+Rua Wilson Castro Mares, 125, Centro | Divisópolis/MG.<br>
+CEP: 39912-000
+</p>
+
+<br><br>
+
+<p>Atenciosamente,</p>
+
+<img src="data:image/{tipo_imagem};base64,{{imagem}}" width="300">
+
+</body>
+</html>
+"""
+
+# OUTLOOK 
+outlook = win32.Dispatch("Outlook.Application")
+namespace = outlook.GetNamespace("MAPI")
+namespace.Logon()
+
+print(" Outlook conectado!")
+
+# ENVIO
+print("\n Iniciando envio dos e-mails...\n")
+
+
+# For que faz o envio de linha por linha
+for i, linha in df.iterrows():
+    try:
+        print(f" Linha {i + 1}/{len(df)}")
+
+        nome = str(linha.get("Nome", "")).strip()
+        email_destino = str(linha.get("E-mail", "")).strip()
+        codigo = str(linha.get("Cod. Corretor", "")).strip()
+
+        if not email_destino or "@" not in email_destino:
+            print(" Email inválido\n")
+            continue
+
+        data_inicio = formatar_data(linha.get("Inicial"))
+        data_fim = formatar_data(linha.get("final"))
+        data_limite = formatar_data(linha.get("prazo"))
+
+        print(f" Enviando para: {nome} ({email_destino})")
+        
+        #Monta o e-mail no template usando os dados do Excel
+        corpo = TEMPLATE.format(
+            codigo=codigo,
+            nome=nome,
+            data_inicio=data_inicio,
+            data_fim=data_fim,
+            data_limite=data_limite,
+            imagem=imagem_base64
+        )
+
+        mail = outlook.CreateItem(0)
+        mail.To = email_destino
+        mail.Subject = "Solicitação de Nota Fiscal" #Titulo e-mail
+        mail.HTMLBody = corpo
+
+        #ENVIO
+        mail.Send()
+
+        print(f" Enviado para: {nome}\n")
+
+        time.sleep(1) # Delay
+
+    except Exception as e:
+        print(f" Erro na linha {i + 1}: {e}\n")
+
+print(" Finalizado!")
